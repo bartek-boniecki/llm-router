@@ -1,0 +1,18 @@
+# Secres / env
+.env
+.env.*
+.envrc
+
+# Virtual env
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
