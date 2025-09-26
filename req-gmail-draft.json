@@ -1,0 +1,15 @@
+﻿{
+  "user_id": "u1",
+  "task_type": "g.gmail_draft_reply",
+  "prompt": "Confirm receipt and propose a 15-min call next week.",
+  "quality_floor": 3,
+  "expected_output_tokens": 160,
+  "integration": {
+    "kind": "g.gmail_draft_reply",
+    "extra": {
+      "query": "in:inbox newer_than:14d -category:promotions",
+      "add_quote": true,
+      "quote_chars": 600
+    }
+  }
+}

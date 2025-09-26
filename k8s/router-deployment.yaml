@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: router
+  namespace: llm-router
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: router
+  template:
+    metadata:
+      labels:
+        app: router
+    spec:
+      containers:
+        - name: api
+          image: your-registry/llm-router:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: router-secrets
+            - configMapRef:
+                name: router-config
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10

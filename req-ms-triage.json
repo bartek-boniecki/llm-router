@@ -1,0 +1,15 @@
+﻿{
+  "user_id": "u1",
+  "task_type": "inbox_triage",
+  "prompt": "You are a helpful assistant. Return ONLY valid JSON matching this exact schema and nothing else: {\"items\": [{\"index\": number, \"quick_action\": {\"needed\": boolean, \"why\": string}, \"lead_potential\": {\"level\": \"high\"|\"medium\"|\"low\", \"why\": string}, \"reply_draft\": string|null}]}.\nGuidelines: (1) If no reply is needed, set reply_draft to null. (2) Be concise in 'why' (<= 20 words). (3) Use the language of each email if obvious; otherwise English.",
+  "quality_floor": 2,
+  "cost_ceiling_usd": 0.03,
+  "expected_output_tokens": 320,
+  "integration": {
+    "kind": "ms.mail_triage",
+    "extra": {
+      "n": 3,
+      "lookback_days": 14
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "user_id": "me",
+  "task_type": "doc_update",
+  "prompt": "Summarize this into a short, well-structured brief.",
+  "quality_floor": 2,
+  "integration": {
+    "kind": "ms.word_upsert",
+    "file_name": "router-output-2.docx",
+    "folder": "AI/Router-Demos"
+  }
+}

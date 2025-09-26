@@ -1,0 +1,7 @@
+﻿{
+  "user_id": "me",
+  "task_type": "mail_reply",
+  "prompt": "Draft a polite, concise reply proposing a 15-minute call next week.",
+  "quality_floor": 2,
+  "integration": { "kind": "ms.mail_draft_reply" }
+}

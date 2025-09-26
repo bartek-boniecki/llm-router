@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: llm-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: your-registry/llm-router:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.queue_worker"]
+          envFrom:
+            - secretRef:
+                name: router-secrets
+            - configMapRef:
+                name: router-config

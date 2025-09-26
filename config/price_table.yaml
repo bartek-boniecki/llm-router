@@ -1,0 +1,62 @@
+# config/price_table.yaml
+# Tiny models first (local), then cloud models (if keys available later).
+# baseline_quality: 1..5 (rough guide; 2 = basic, 3 = decent, 4+ = strong)
+
+models:
+  # ---- Local (Ollama) ----
+  - provider: ollama
+    model: tinyllama
+    price_in_per_1k: 0.0
+    price_out_per_1k: 0.0
+    max_input_tokens: 8000
+    max_output_tokens: 512
+    baseline_quality: 2
+
+  - provider: ollama
+    model: phi3:mini
+    price_in_per_1k: 0.0
+    price_out_per_1k: 0.0
+    max_input_tokens: 8000
+    max_output_tokens: 1024
+    baseline_quality: 3
+
+  - provider: ollama
+    model: llama3
+    price_in_per_1k: 0.0
+    price_out_per_1k: 0.0
+    max_input_tokens: 8000
+    max_output_tokens: 1024
+    baseline_quality: 3
+
+  # ---- Cloud (fill keys in .env when ready) ----
+  - provider: openai
+    model: gpt-4o-mini
+    price_in_per_1k: 0.15     # adjust later if needed
+    price_out_per_1k: 0.60
+    max_input_tokens: 128000
+    max_output_tokens: 4096
+    baseline_quality: 4
+
+  - provider: google
+    model: gemini-1.5-flash
+    price_in_per_1k: 0.075
+    price_out_per_1k: 0.30
+    max_input_tokens: 128000
+    max_output_tokens: 8192
+    baseline_quality: 4
+
+  - provider: mistral
+    model: mistral-small
+    price_in_per_1k: 0.10
+    price_out_per_1k: 0.30
+    max_input_tokens: 32000
+    max_output_tokens: 8192
+    baseline_quality: 4
+
+policy:
+  # cache_seconds optional; if you add Redis later, you can enable it
+  cache_seconds: 0
+  retry:
+    max_attempts: 2
+    initial_backoff_ms: 400
+    multiplier: 2.0

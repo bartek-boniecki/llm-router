@@ -1,0 +1,14 @@
+{
+  "user_id": "u1",
+  "task_type": "zoho_resume_summarize_from_zoho",
+  "prompt": "Extract and summarize the resume into 5–8 concise bullets covering ONLY: (1) core clinical skills and modalities, (2) relevant experience with years, (3) qualifications/certifications/licensure, (4) notable accomplishments with impact. Keep it factual, unbiased, and terse. If the resume is in Polish, respond in Polish; otherwise respond in English.",
+  "quality_floor": 3,
+  "cost_ceiling_usd": 0.02,
+  "expected_output_tokens": 220,
+  "integration": {
+    "kind": "zoho.resume_summarize_from_zoho",
+    "extra": {
+      "candidate_id": "82646000000446005"
+    }
+  }
+}

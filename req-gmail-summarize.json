@@ -1,0 +1,12 @@
+﻿{
+  "user_id": "u1",
+  "task_type": "gmail_summarize",
+  "prompt": "Summarize my latest thread(s) and label actions/leads.",
+  "quality_floor": 2,
+  "cost_ceiling_usd": 0.02,
+  "expected_output_tokens": 220,
+  "integration": {
+    "kind": "g.gmail_summarize",
+    "extra": { "n": 1, "lookback_days": 14 }
+  }
+}

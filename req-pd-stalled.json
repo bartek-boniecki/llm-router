@@ -1,0 +1,16 @@
+﻿{
+  "user_id": "u1",
+  "task_type": "pd_inbox_lead_actions",
+  "prompt": "From the fetched Pipedrive-synced inbox emails, identify messages from potential leads that need quick action. For each candidate email: say if it’s likely a lead, why, the current state (unanswered / awaiting reply / follow-up overdue), and propose a short next action (e.g., reply now, schedule follow-up, ask for missing info). Return a compact checklist.",
+  "quality_floor": 2,
+  "cost_ceiling_usd": 0.01,
+  "expected_output_tokens": 220,
+  "integration": {
+    "kind": "pd.inbox_lead_actions",
+    "extra": {
+      "lookback_days": 14,
+      "max_threads": 25,
+      "consider_if_no_reply_hours": 36
+    }
+  }
+}

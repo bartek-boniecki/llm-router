@@ -1,0 +1,18 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-sqs-scaler
+  namespace: llm-router
+spec:
+  scaleTargetRef:
+    name: worker
+  pollingInterval: 30
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  triggers:
+    - type: aws-sqs-queue
+      metadata:
+        queueURL: https://sqs.us-east-1.amazonaws.com/123456789012/your-queue
+        awsRegion: us-east-1
+      authenticationRef:
+        name: keda-aws-credentials

@@ -1,0 +1,12 @@
+﻿{
+  "user_id": "u1",
+  "task_type": "gdoc_create",
+  "prompt": "Write a short, clear one-page status report for release v1.2.3 based on the notes below:\n- Fixed 3 P1 bugs\n- Reduced checkout latency 18%\n- Added audit logs\n- Next: AB test new onboarding.",
+  "quality_floor": 2,
+  "cost_ceiling_usd": 0.02,
+  "expected_output_tokens": 256,
+  "integration": {
+    "kind": "g.docs_create",
+    "extra": { "title": "Release Status (Router Demo)" }
+  }
+}

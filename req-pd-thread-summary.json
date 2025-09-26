@@ -1,0 +1,12 @@
+{
+  "user_id": "u1",
+  "task_type": "pd_thread_summary",
+  "prompt": "Summarize the email thread into:\n\n1) Essentials (3-6 bullets, who/what/when/decisions)\n2) Sentiment (sender): positive|neutral|negative — one short reason\n3) ActionItems (2-5 bullets, each starts with Owner: Me|Sender and concrete next step)\n\nRules:\n- Be concise and factual.\n- Keep the language the same as the thread’s dominant language.\n- Do not include raw headers or signatures.",
+  "quality_floor": 3,
+  "cost_ceiling_usd": 0.02,
+  "expected_output_tokens": 260,
+  "integration": {
+    "kind": "pd.thread_summary_to_pd",
+    "extra": {}
+  }
+}

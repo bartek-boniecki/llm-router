@@ -1,0 +1,42 @@
+{
+  "user_id": "u1",
+  "task_type": "zoho_shortlist_from_zoho",
+  "prompt": "You are a fair, bias-aware screener. Using the rubric and candidate packs in the provided context, produce a ranked shortlist. Output JSON with fields: ranked_candidates (array of {name, total_score, score_breakdown: {skills_match, relevant_experience, qualifications, achievements_impact, role_fit_signals}, notes, risks, decision}), and rejected_candidates (array with {name, reason}). Use 0–5 integers for each category and a total out of 25. Base scores ONLY on evidence in the text; if unclear, mark 'Insufficient Evidence'.",
+  "quality_floor": 3,
+  "cost_ceiling_usd": 0.04,
+  "expected_output_tokens": 350,
+  "integration": {
+    "kind": "zoho.shortlist_prefetch_from_zoho",
+    "extra": {
+      "job_criteria": {
+        "title": "Psychologist (Clinical/Counseling)",
+        "must_have": [
+          "Master's or higher in Psychology (Clinical/Counseling)",
+          "2+ years supervised clinical experience",
+          "Evidence-based therapies (e.g., CBT, DBT, Motivational Interviewing)",
+          "Psychological assessment experience (e.g., WAIS, WISC, MMPI-2, BDI)",
+          "Accurate clinical documentation and GDPR-compliant practice",
+          "Fluent Polish; working English"
+        ],
+        "nice_to_have": [
+          "Telehealth delivery experience",
+          "Group therapy or psychoeducation",
+          "Crisis intervention/on-call experience",
+          "Child/adolescent or couples therapy exposure",
+          "EHR usage (e.g., SimplePractice or equivalent)",
+          "Research/publications or program evaluation",
+          "Clinical supervision received or provided"
+        ],
+        "min_years_experience": 2,
+        "required_qualifications": [
+          "M.A./M.Sc./Ph.D. in Psychology (recognized in EU/Poland)",
+          "Valid practice eligibility in Poland/EU (license/registration if applicable)"
+        ],
+        "location": ["Warsaw or remote within EU time zone"],
+        "keywords": ["therapeutic alliance", "case formulation", "treatment planning", "outcome measurement"],
+        "other": "Availability within 30 days preferred"
+      },
+      "candidate_ids": ["82646000000446005", "82646000000446083"]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+﻿{
+  "user_id": "u1",
+  "task_type": "pd_mail_lead_decision",
+  "prompt": "You will see metadata from the newest email thread. Decide if the sender is a potential sales lead.\n\nOutput EXACTLY this, one line each:\nLead: yes|no — one short reason (<=12 words)\nCategory: inbound|partner|support|spam|other — best guess\nIf Lead is yes, also output:\nNextAction: reply now | ask for info | schedule follow-up\nReplyDraft: 3-6 short sentences in the same language as the email; if Lead is no, write: None",
+  "quality_floor": 2,
+  "cost_ceiling_usd": 0.01,
+  "expected_output_tokens": 160,
+  "integration": {
+    "kind": "pd.mail_lead",
+    "extra": {}
+  }
+}
