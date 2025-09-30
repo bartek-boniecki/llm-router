@@ -5,20 +5,22 @@
 /state/*
 !/state/.gitkeep
 
-# env files
+# Any tokens anywhere
+*token*.json
+*client_secret*.json
+*credentials*.json
+
+# Env files
 .env
 .env.*
 !.env.example
 
-# Python & build stuff
+# Python & build
 __pycache__/
 *.pyc
 dist/
 build/
 *.egg-info/
-
-# Node (if any)
-node_modules/
 
 # OS/editor
 .DS_Store
