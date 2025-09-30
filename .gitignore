@@ -1,18 +1,27 @@
-# Secres / env
+# === NEVER COMMIT SECRETS OR CACHE ===
+/secrets/*
+!/secrets/.gitkeep
+!/secrets/README.md
+/state/*
+!/state/.gitkeep
+
+# env files
 .env
 .env.*
-.envrc
+!.env.example
 
-# Virtual env
-venv/
-.venv/
-env/
-
-# Python cache
+# Python & build stuff
 __pycache__/
 *.pyc
+dist/
+build/
+*.egg-info/
 
-# IDE / OS
+# Node (if any)
+node_modules/
+
+# OS/editor
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
-.DS_Store
