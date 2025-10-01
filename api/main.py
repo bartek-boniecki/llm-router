@@ -87,20 +87,211 @@ def _pick_model_by_policy(prompt: str, expected_out_tokens: int, quality_floor: 
         # annotate with estimated cost now
         est = _estimate_cost(m, in_toks, out_toks)
         viable.append((est, m))
+        # choose the cheapest viable option by estimated cost
+        if viable:
+            viable.sort(key=lambda x: x[0])
+            return viable[0][1]
+
 
     # if nothing viable (e.g., floor too high), fall back to ANY local
     if not viable:
+        # If there exist hosted models that meet the floor but keys are missing, surface a clear error
+        hosted_needing_keys = [
+            m for m in _MODELS
+            if m.get("provider") != "ollama"
+            and int(m.get("baseline_quality", 1)) >= quality_floor
+            and not _has_key_for(m.get("provider"))
+        ]
+        if hosted_needing_keys:
+            providers_missing = sorted({m["provider"] for m in hosted_needing_keys})
+            raise HTTPException(
+                status_code=400,
+                detail=f"No API key for provider(s): {', '.join(providers_missing)}; cannot meet quality_floor={quality_floor}"
+            )
+
+        # else really nothing meets the floor → fall back to ANY local
         fallbacks = [m for m in _MODELS if m.get("provider") == "ollama"]
         if fallbacks:
             return fallbacks[0]
         # last ditch: return a tiny local default
         return {"provider": "ollama", "model": "tinyllama", "baseline_quality": 2}
 
-    # choose the cheapest among viable (cost estimate only guides selection)
-    viable.sort(key=lambda x: x[0])
-    return viable[0][1]
+
+# ---- Google model discovery (cache) + Google caller ----
+_GOOGLE_MODEL_CACHE = {"fetched": False, "names": set()}
+
+def _google_list_models(api_key: str) -> set[str]:
+    """
+    Fetch available Google model names (suffix after 'models/'), v1 endpoint.
+    Returns a set like {'gemini-2.5-flash', 'gemini-1.5-pro', ...}
+    """
+    base = os.getenv("GOOGLE_GENAI_BASE", "https://generativelanguage.googleapis.com").rstrip("/")
+    url = f"{base}/v1/models?key={api_key}"
+    with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)) as client:
+        r = client.get(url)
+        r.raise_for_status()
+        data = r.json() or {}
+    out = set()
+    for m in (data.get("models") or []):
+        name = m.get("name", "")
+        if name.startswith("models/"):
+            out.add(name.split("/", 1)[1])
+    return out
+
+def _google_ensure_cache(api_key: str) -> None:
+    if not _GOOGLE_MODEL_CACHE["fetched"]:
+        _GOOGLE_MODEL_CACHE["names"] = _google_list_models(api_key)
+        _GOOGLE_MODEL_CACHE["fetched"] = True
+
+def _google_resolve_model(requested: Optional[str], api_key: str) -> str:
+    """
+    Map a requested model to one that actually exists for this project.
+    Strategy:
+      1) Remove '-latest' if present.
+      2) If exact match exists, use it.
+      3) Otherwise pick from a preference list.
+    """
+    _google_ensure_cache(api_key)
+    available = _GOOGLE_MODEL_CACHE["names"] or set()
+
+    wanted = (requested or "").strip() or "gemini-2.5-flash"
+    if wanted.endswith("-latest"):
+        wanted = wanted.replace("-latest", "")
+
+    if wanted in available:
+        return wanted
+
+    prefs = [
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+        "gemini-2.0-pro",
+        "gemini-1.5-pro",
+    ]
+    for p in prefs:
+        if p in available:
+            return p
+
+    if available:
+        return sorted(available)[0]
+
+    raise RuntimeError("Google GenAI: no available models for this API key/project (v1 list returned empty).")
+
+def call_google_genai(model: str, prompt: str, max_output_tokens: int, temperature: float = 0.2, stop: Optional[list[str]] = None) -> str:
+    """
+    Google Generative Language API (Gemini) caller — REST first.
+    - API version: /v1 for non-2.x; /v1beta for 2.x (2.0, 2.5)
+    """
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("No Google GenAI API key set")
+
+    def _api_version_for_model(m: str) -> str:
+        return "v1beta" if m.startswith("gemini-2.") else "v1"
+
+    base = os.getenv("GOOGLE_GENAI_BASE", "https://generativelanguage.googleapis.com").rstrip("/")
+    resolved = _google_resolve_model(model, api_key)
+
+    def _post_rest(resolved_model: str, api_version: str) -> httpx.Response:
+        url = f"{base}/{api_version}/models/{resolved_model}:generateContent?key={api_key}"
+        payload: Dict[str, Any] = {
+            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": max_output_tokens, "temperature": temperature},
+        }
+        if stop:
+            payload["generationConfig"]["stopSequences"] = stop
+        with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)) as client:
+            return client.post(url, json=payload)
+
+    api_version = _api_version_for_model(resolved)
+    r = _post_rest(resolved, api_version)
+    if r.status_code in (400, 404):
+        _GOOGLE_MODEL_CACHE["fetched"] = False
+        resolved = _google_resolve_model(model, api_key)
+        api_version = _api_version_for_model(resolved)
+        r = _post_rest(resolved, api_version)
+    r.raise_for_status()
+    data = r.json() or {}
+    texts: list[str] = []
+    for cand in (data.get("candidates") or []):
+        for p in (cand.get("content", {}).get("parts") or []):
+            if isinstance(p, dict) and p.get("text"):
+                texts.append(str(p["text"]))
+    if texts:
+        return "\n".join(t for t in texts if t).strip()
+    first = (data.get("candidates") or [{}])[0]
+    raise RuntimeError(f"REST returned no text (finishReason={first.get('finishReason')}, promptFeedback={data.get('promptFeedback')})")
 
 
+# ---- Hosted providers via raw HTTP (avoid SDK drift) ----
+def call_openai(model: str, prompt: str, max_output_tokens: int, temperature: float = 0.2, stop: Optional[list[str]] = None) -> str:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OpenAI API key not set")
+    url = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com").rstrip("/") + "/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_output_tokens,
+        "temperature": temperature,
+    }
+    if stop:
+        payload["stop"] = stop
+    with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)) as client:
+        r = client.post(url, headers=headers, json=payload)
+        r.raise_for_status()
+        data = r.json() or {}
+        msg = (((data.get("choices") or [{}])[0] or {}).get("message") or {})
+        return (msg.get("content") or "").strip()
+
+def call_anthropic(model: str, prompt: str, max_output_tokens: int, temperature: float = 0.2, stop: Optional[list[str]] = None) -> str:
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("Anthropic API key not set")
+    url = (os.getenv("ANTHROPIC_API_BASE") or "https://api.anthropic.com").rstrip("/") + "/v1/messages"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": os.getenv("ANTHROPIC_API_VERSION", "2023-06-01"),
+        "Content-Type": "application/json",
+    }
+    payload: Dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_output_tokens,
+        "temperature": temperature,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if stop:
+        payload["stop_sequences"] = stop
+    with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)) as client:
+        r = client.post(url, headers=headers, json=payload)
+        r.raise_for_status()
+        data = r.json() or {}
+        parts = []
+        for blk in data.get("content", []):
+            if isinstance(blk, dict) and blk.get("type") == "text":
+                parts.append(blk.get("text") or "")
+        return "\n".join([p for p in parts if p]).strip()
+
+def call_mistral(model: str, prompt: str, max_output_tokens: int, temperature: float = 0.2, stop: Optional[list[str]] = None) -> str:
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
+        raise RuntimeError("Mistral API key not set")
+    url = (os.getenv("MISTRAL_API_BASE") or "https://api.mistral.ai").rstrip("/") + "/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_output_tokens,
+        "temperature": temperature,
+    }
+    if stop:
+        payload["stop"] = stop
+    with httpx.Client(timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)) as client:
+        r = client.post(url, headers=headers, json=payload)
+        r.raise_for_status()
+        data = r.json() or {}
+        msg = (((data.get("choices") or [{}])[0] or {}).get("message") or {})
+        return (msg.get("content") or "").strip()
 
 
 
@@ -814,6 +1005,64 @@ MODEL_TRIAGE_FALLBACK = os.getenv("MODEL_TRIAGE_FALLBACK", "tinyllama")
 
 
 app = FastAPI(title=APP_NAME)
+from datetime import datetime
+import os as _os
+import hashlib as _hashlib
+
+@app.get("/__info")
+def __info() -> Dict[str, Any]:
+    """
+    Return minimal runtime info so we can confirm which file is running
+    and what routes are registered.
+    """
+    try:
+        here = _os.path.abspath(__file__)
+        stat = _os.stat(here)
+        with open(here, "rb") as f:
+            sha = _hashlib.sha1(f.read()).hexdigest()[:10]
+        routes = sorted([getattr(r, "path", "") for r in app.router.routes])
+        return {
+            "app": APP_NAME,
+            "time_utc": datetime.utcnow().isoformat() + "Z",
+            "revision": {"file": here, "mtime": int(stat.st_mtime), "sha1_10": sha},
+            "routes": routes,
+        }
+    except Exception as e:
+        return {"app": APP_NAME, "error": str(e)}
+
+
+@app.get("/providers/google/models")
+def google_models() -> Dict[str, Any]:
+    """
+    List Google (Gemini) model IDs visible to your API key.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No GOOGLE_API_KEY / GOOGLE_GENAI_API_KEY / GEMINI_API_KEY set")
+    try:
+        _GOOGLE_MODEL_CACHE["fetched"] = False  # refresh cache each call
+        names = sorted(list(_google_list_models(api_key)))
+        return {"models": names}
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Google list models failed: {e}")
+
+@app.post("/providers/google/ping")
+def google_ping() -> Dict[str, Any]:
+    """
+    Minimal sanity check: pick a visible model and generate a few tokens.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No GOOGLE_API_KEY / GOOGLE_GENAI_API_KEY / GEMINI_API_KEY set")
+    try:
+        _GOOGLE_MODEL_CACHE["fetched"] = False
+        model = _google_resolve_model(None, api_key)
+        text = call_google_genai(model, "ping", max_output_tokens=8, temperature=0.0)
+        return {"model_used": model, "ok": True, "text": text}
+    except httpx.HTTPStatusError as e:
+        return {"ok": False, "error": f"HTTP {e.response.status_code}", "detail": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 class IntegrationSpec(BaseModel):
@@ -1448,34 +1697,86 @@ def route(req: RouteRequest) -> RouteResponse:
 
     # ---- Cost-aware model planning (from price_table.yaml) ----
     planned = _pick_model_by_policy(prompt, req.expected_output_tokens, req.quality_floor)
+    # safety: planner must always return a dict; if not, force a local fallback
+    if not planned:
+        planned = {"provider": "ollama", "model": choose_model(req.quality_floor, kind), "baseline_quality": 2}
     provider = planned["provider"]
     model = planned["model"]
 
-    # Safety: until hosted providers are wired, coerce to ollama so nothing breaks
-    if provider != "ollama":
-        provider = "ollama"
-        model = choose_model(req.quality_floor, kind)
+    # Budget check (rough heuristic using the same estimator)
+    in_toks, out_toks = _estimate_tokens(prompt, req.expected_output_tokens)
+    planned_cost = _estimate_cost(planned, in_toks, out_toks)
 
-    # Call LLM with robust timeout/retry/fallback
-    output = call_ollama(model=model, prompt=prompt, timeout=make_timeout())
+    # If hosted & over ceiling → force local cheap fallback
+    use_hosted = (provider != "ollama") and (planned_cost <= req.cost_ceiling_usd)
+
+    # Prepare exec vars
+    output = ""
+    actual_provider = provider
+    estimated_cost_usd = 0.0
+    integration_status = None
+
+    if use_hosted:
+        try:
+            if provider == "openai":
+                output = call_openai(model, prompt, req.expected_output_tokens, temperature=0.2)
+            elif provider == "anthropic":
+                output = call_anthropic(model, prompt, req.expected_output_tokens, temperature=0.2)
+            elif provider == "mistral":
+                output = call_mistral(model, prompt, req.expected_output_tokens, temperature=0.2)
+            elif provider == "google":
+                # Resolve against available models for your key (copes with project access differences)
+                api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY") or os.getenv("GEMINI_API_KEY")
+                if not api_key:
+                    raise RuntimeError("Google provider selected but no API key set")
+                model = _google_resolve_model(model, api_key)
+                output = call_google_genai(model, prompt, req.expected_output_tokens, temperature=0.2)
+            else:
+                # Unknown hosted → local fallback
+                raise RuntimeError(f"Unsupported provider: {provider}")
+            if not (output or "").strip():
+                raise RuntimeError(f"{provider} returned empty output")
+            estimated_cost_usd = planned_cost
+            integration_status = f"used={provider}/{model}"
+        except Exception as e:
+            # hosted failed → fallback to local
+            fallback_model = choose_model(req.quality_floor, kind)
+            output = call_ollama(model=fallback_model, prompt=prompt, timeout=make_timeout())
+            actual_provider = "ollama"
+            model = fallback_model
+            integration_status = f"hosted-fallback: {str(e)[:120]} | used=ollama/{model}"
+    else:
+        # Always safe local path
+        fallback_model = choose_model(req.quality_floor, kind)
+        output = call_ollama(model=fallback_model, prompt=prompt, timeout=make_timeout())
+        actual_provider = "ollama"
+        model = fallback_model
+        integration_status = f"used=ollama/{model}"
+
+
 
     artifact_uri = None
-    integration_status = None
+    # keep whatever was computed earlier in integration_status
     if req.integration is not None:
         result = dispatch_integration(req.integration.kind, output, req.integration)
         artifact_uri = result.get("artifact_uri")
-        integration_status = result.get("integration_status", "ok")
+        integ = result.get("integration_status")
+        if integ:
+            integration_status = (integration_status + " | " + integ) if integration_status else integ
         if result.get("output_override"):
             output = result["output_override"]
+
+
+
 
     latency_ms = int((time.time() - t0) * 1000)
 
     return RouteResponse(
         job_id=os.urandom(8).hex(),
-        provider=provider,
+        provider=actual_provider,
         model=model,
         output_text=output,
-        estimated_cost_usd=0.0,
+        estimated_cost_usd=estimated_cost_usd,
         latency_ms=latency_ms,
         cached=False,
         artifact_uri=artifact_uri,
