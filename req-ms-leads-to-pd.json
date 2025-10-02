@@ -1,0 +1,15 @@
+{
+  "user_id": "u1",
+  "task_type": "lead_scan_ms_to_pd",
+  "prompt": "Scan the newest 5 Outlook email threads. Return ONLY JSON. If any message is a potential sales lead (interest in product/pricing/timeline, or asks next steps), mark it as is_lead=true and draft a short reply using the sender's name.",
+  "quality_floor": 5,
+  "cost_ceiling_usd": 2,
+  "expected_output_tokens": 280,
+  "integration": {
+    "kind": "ms.mail_leads_to_pd",
+    "extra": {
+      "n": 5,
+      "lookback_days": 14
+    }
+  }
+}

@@ -30,7 +30,7 @@ from api.integrations.pipedrive import (
 
 
 # ---- Model registry + cost-aware selection (reads config/price_table.yaml) ----
-PRICE_TABLE_PATH = os.getenv("PRICE_TABLE_PATH", "config/price_table.yaml")
+PRICE_TABLE_PATH = os.getenv("PRICE_TABLE_PATH") or "config/price_table.yaml"
 
 def _load_price_table() -> dict:
     try:
@@ -51,7 +51,11 @@ def _has_key_for(provider: str) -> bool:
     if provider == "mistral":
         return bool(os.getenv("MISTRAL_API_KEY"))
     if provider == "google":
-        return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY"))
+        return bool(
+            os.getenv("GOOGLE_API_KEY")
+            or os.getenv("GOOGLE_GENAI_API_KEY")
+            or os.getenv("GEMINI_API_KEY")
+        )
     return False
 
 def _chars_to_tokens(chars: int) -> int:
@@ -87,10 +91,10 @@ def _pick_model_by_policy(prompt: str, expected_out_tokens: int, quality_floor: 
         # annotate with estimated cost now
         est = _estimate_cost(m, in_toks, out_toks)
         viable.append((est, m))
-        # choose the cheapest viable option by estimated cost
-        if viable:
-            viable.sort(key=lambda x: x[0])
-            return viable[0][1]
+    # choose the cheapest viable option by estimated cost
+    if viable:
+        viable.sort(key=lambda x: x[0])
+        return viable[0][1]
 
 
     # if nothing viable (e.g., floor too high), fall back to ANY local
@@ -293,6 +297,23 @@ def call_mistral(model: str, prompt: str, max_output_tokens: int, temperature: f
         msg = (((data.get("choices") or [{}])[0] or {}).get("message") or {})
         return (msg.get("content") or "").strip()
 
+
+# ---- Pipedrive helpers ----
+def _pipedrive_api_base() -> str:
+    """
+    Return a normalized Pipedrive API base like 'https://api.pipedrive.com/v1'
+    even if PIPEDRIVE_BASE_URL already includes '/v1'.
+    """
+    base = (os.getenv("PIPEDRIVE_BASE_URL") or "https://api.pipedrive.com").rstrip("/")
+    # strip a trailing '/v1' if present
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return f"{base}/v1"
+
+def _redact(s: str) -> str:
+    """Redact the Pipedrive token from error strings/URLs in logs."""
+    tok = os.getenv("PIPEDRIVE_API_TOKEN") or ""
+    return s.replace(tok, "****") if tok else s
 
 
 # ---- Debug helper for Gmail shapes (enabled when DEBUG_GMAIL=1) ----
@@ -903,65 +924,6 @@ def _gmail_create_draft_reply_flexible(
     )
 
 
-# ---- Direct Gmail API helpers (bypass unknown helper signatures) ----
-def _gmail_build_service_from_token():
-    """
-    Build a Gmail service using the existing token JSON. Only reads the file.
-    """
-    from google.oauth2.credentials import Credentials
-    from google.auth.transport.requests import Request
-    from googleapiclient.discovery import build
-
-    token_path = os.getenv("GOOGLE_TOKEN_PATH") or os.getenv("GOOGLE_OAUTH_TOKEN_JSON")
-    if not token_path:
-        raise RuntimeError("GOOGLE_TOKEN_PATH not set")
-
-    scopes = [
-        "https://www.googleapis.com/auth/gmail.compose",
-        "https://www.googleapis.com/auth/gmail.modify",
-    ]
-    creds = Credentials.from_authorized_user_file(token_path, scopes=scopes)
-    if creds and creds.expired and creds.refresh_token:
-        # refresh happens in-memory; no write to disk required
-        creds.refresh(Request())
-
-    return build("gmail", "v1", credentials=creds, cache_discovery=False)
-
-
-def _gmail_create_draft_via_api(
-    *,
-    to: str,
-    subject: str,
-    body_text: str,
-    thread_id: str | None = None,
-    in_reply_to_msgid: str | None = None,
-    refs: str | list[str] | None = None,
-) -> str:
-    """
-    Create a Gmail draft directly via Gmail API. Returns the draft id.
-    """
-    from email.mime.text import MIMEText
-    import base64
-
-    svc = _gmail_build_service_from_token()
-
-    msg = MIMEText(body_text, "plain", "utf-8")
-    msg["To"] = to
-    msg["Subject"] = subject
-    if in_reply_to_msgid:
-        msg["In-Reply-To"] = in_reply_to_msgid
-    if refs:
-        msg["References"] = refs if isinstance(refs, str) else " ".join(refs)
-
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
-    payload = {"message": {"raw": raw}}
-    if thread_id:
-        payload["message"]["threadId"] = thread_id
-
-    draft = svc.users().drafts().create(userId="me", body=payload).execute()
-    return draft.get("id") or draft.get("draft", {}).get("id") or ""
-
-
 def _build_gmail_summary_prompt(context: str, user_prompt: str) -> str:
     return f"""
 You are given a Gmail thread below. Summarize crisply for a busy person.
@@ -1029,6 +991,32 @@ def __info() -> Dict[str, Any]:
         }
     except Exception as e:
         return {"app": APP_NAME, "error": str(e)}
+
+
+@app.get("/__diag")
+def __diag(sample_quality_floor: int = 5, sample_expected_out_tokens: int = 256) -> Dict[str, Any]:
+    """
+    Diagnostics: shows which providers have visible keys and what the planner would pick.
+    Does not call any provider. Uses a small sample prompt for costing.
+    """
+    try:
+        env_seen = {
+            "OPENAI_API_KEY": bool(os.getenv("OPENAI_API_KEY")),
+            "ANTHROPIC_API_KEY": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "MISTRAL_API_KEY": bool(os.getenv("MISTRAL_API_KEY")),
+            "GOOGLE_API_KEY": bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY")),
+        }
+        sample_prompt = "diagnostic planning probe"
+        planned = _pick_model_by_policy(sample_prompt, sample_expected_out_tokens, sample_quality_floor)
+        return {
+            "env_seen": env_seen,
+            "planned": planned,
+            "price_table_path": PRICE_TABLE_PATH,
+            "models_loaded": len(_MODELS),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 
 
 @app.get("/providers/google/models")
@@ -1122,6 +1110,7 @@ def choose_model(quality_floor: int, integration_kind: Optional[str]) -> str:
     """
     if integration_kind in (
         "ms.mail_triage",
+        "ms.mail_leads_to_pd",   # ← added
         "pd.inbox_lead_actions",
         "pd.mail_lead",
         "pd.thread_summary_to_pd",
@@ -1230,6 +1219,22 @@ def _prefetch_context(kind: str, spec: IntegrationSpec) -> Optional[str]:
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Triage context error: {e}")
     
+        # --- Microsoft 365: scan newest threads and later create PD leads ---
+    if kind == "ms.mail_leads_to_pd":
+        try:
+            n = int(spec.extra.get("n", 5)) if spec and spec.extra else 5
+            lookback = int(spec.extra.get("lookback_days", 14)) if spec and spec.extra else 14
+            fn = _lazy_import("api.integrations.ms365:build_inbox_triage_context")
+            raw = fn(n=n, lookback_days=lookback)  # returns readable context with From/Subject/etc.
+            if len(raw) > TRIAGE_MAX_CONTEXT_CHARS:
+                raw = raw[:TRIAGE_MAX_CONTEXT_CHARS] + "\n[... trimmed ...]"
+            return raw
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"M365 lead-scan context error: {e}")
+
+
     # --- Gmail summarize: build LLM context from newest Gmail threads ---
     if kind == "g.gmail_summarize":
         try:
@@ -1286,6 +1291,8 @@ def _prefetch_context(kind: str, spec: IntegrationSpec) -> Optional[str]:
             return pd_thread_context_prefetch(lookback_days=lookback_days)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Pipedrive thread prefetch error: {e}")
+
+
 
     # --- Pipedrive: analyze Pipedrive-synced inbox for lead actions ---
     if kind == "pd.inbox_lead_actions":
@@ -1352,7 +1359,6 @@ def _prefetch_context(kind: str, spec: IntegrationSpec) -> Optional[str]:
 
 
 
-
 def _build_triage_prompt(context: str, user_prompt: str) -> str:
     """
     Construct a strict, structured prompt so small local models produce the fields we need.
@@ -1367,20 +1373,20 @@ def _build_triage_prompt(context: str, user_prompt: str) -> str:
 You are an assistant that performs inbox triage ONLY based on the CONTEXT above.
 For each message [i], you MUST produce the following exact fields:
 
-- QuickAction: yes|no — one short reason.
-- LeadPotential: high|medium|low — one short reason.
-- ReplyDraft: 3–6 short sentences, in the same language as the message. If not appropriate, write: None.
+- QuickAction: yes|no - one short reason.
+- LeadPotential: high|medium|low - one short reason.
+- ReplyDraft: 3-6 short sentences, in the same language as the message. If not appropriate, write: None.
 
 Language rule: respond in the same language as the original message (Polish vs English, etc).
 
 [EXAMPLE OUTPUT FORMAT]
 - [1]
-  QuickAction: yes — sender requested next steps.
-  LeadPotential: medium — business tone and product interest.
+  QuickAction: yes - sender requested next steps.
+  LeadPotential: medium - business tone and product interest.
   ReplyDraft: Dziękuję za wiadomość! Potwierdzam odbiór i proponuję krótkie spotkanie jutro...
 - [2]
-  QuickAction: no — purely informational.
-  LeadPotential: low — no buying intent.
+  QuickAction: no - purely informational.
+  LeadPotential: low - no buying intent.
   ReplyDraft: None
 
 [USER REQUEST]
@@ -1391,6 +1397,8 @@ Language rule: respond in the same language as the original message (Polish vs E
 - Keep answers concise.
 - Do NOT add any sections other than the bullet list.
 """
+
+
 
 def _build_pd_actions_prompt(context: str, user_prompt: str) -> str:
     return f"""
@@ -1477,6 +1485,48 @@ def _build_pd_maillead_prompt(context: str, user_prompt: str) -> str:
         "Category: inbound|partner|support|spam|other - best guess\n"
         "NextAction: reply now | ask for info | schedule follow-up | none\n"
         "ReplyDraft: 3-6 short sentences in the same language IF Lead is yes and NextAction is reply now; otherwise write: None\n\n"
+        "[USER REQUEST]\n"
+        f"{user_prompt}\n"
+    )
+
+def _build_ms_leadscan_prompt(context: str, user_prompt: str) -> str:
+    """
+    Analyze Outlook (M365) inbox context and return ONLY strict JSON the router can act on.
+    The JSON must be:
+    {
+      "leads":[
+        {
+          "index": number,
+          "is_lead": boolean,
+          "sender_name": string,
+          "sender_email": string,
+          "reply_subject": string|null,
+          "reply_draft": string|null
+        }
+      ]
+    }
+    Heuristics:
+    - If subject OR body contains buy-intent words (case-insensitive): inquiry, inquiries, offer, offers, quote,
+      quotation, estimate, pricing, price, proposal, rfq, rfi, trial, demo, meeting, call, availability, order, purchase
+      -> set is_lead=true unless it's clearly a mass marketing email or spam.
+    - If is_lead=false => reply_draft MUST be null.
+    - Use the original message language for reply_draft.
+    - If nothing qualifies, return {"leads": []}.
+    - Do NOT include any explanation outside the JSON.
+    """
+    return (
+        "[BEGIN CONTEXT]\n"
+        f"{context}\n"
+        "[END CONTEXT]\n\n"
+        "[INSTRUCTIONS]\n"
+        "Decide for each message if it is a potential sales lead based ONLY on the CONTEXT above.\n"
+        "Return ONLY valid JSON using this EXACT schema and nothing else.\n"
+        "{\n"
+        "  \"leads\": [\n"
+        "    {\"index\": 1, \"is_lead\": true, \"sender_name\": \"Full Name\", \"sender_email\": \"user@example.com\", "
+        "\"reply_subject\": \"Re: <short subject>\", \"reply_draft\": \"<3–6 concise sentences>\"}\n"
+        "  ]\n"
+        "}\n\n"
         "[USER REQUEST]\n"
         f"{user_prompt}\n"
     )
@@ -1602,6 +1652,111 @@ def dispatch_integration(kind: str, output_text: str, spec: IntegrationSpec) -> 
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Pipedrive note create failed: {e}")
 
+    # --- M365 → Pipedrive: create persons/leads for detected leads ---
+    if kind == "ms.mail_leads_to_pd":
+        import json, re
+        api = _pipedrive_api_base()
+        token = os.getenv("PIPEDRIVE_API_TOKEN")
+        if not token:
+            raise HTTPException(status_code=400, detail="PIPEDRIVE_API_TOKEN not set")
+
+        def _http():
+            return httpx.Client(timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0))
+
+        def _clean_email(v: str) -> str:
+            if not v:
+                return ""
+            s = v.strip()
+            if "<" in s and ">" in s:
+                try:
+                    s = s.split("<", 1)[1].split(">", 1)[0].strip()
+                except Exception:
+                    pass
+            return s
+
+        def _find_person_id_by_email(email: str) -> Optional[int]:
+            if not email:
+                return None
+            params = {"api_token": token, "term": email, "fields": "email", "exact_match": 1, "limit": 1}
+            with _http() as c:
+                r = c.get(f"{api}/persons/search", params=params)
+                r.raise_for_status()
+                data = r.json() or {}
+                items = (data.get("data") or {}).get("items") or []
+                if items:
+                    return (items[0].get("item") or {}).get("id")
+            return None
+
+        def _create_person(name: str, email: str) -> int:
+            body = {
+                "name": name or (email.split("@")[0] if email else "Unknown"),
+                "email": [{"value": email, "primary": True, "label": "work"}] if email else [],
+            }
+            params = {"api_token": token}
+            with _http() as c:
+                r = c.post(f"{api}/persons", params=params, json=body)
+                r.raise_for_status()
+                return (r.json().get("data") or {}).get("id")
+
+        def _create_lead(title: str, person_id: Optional[int]) -> int:
+            body = {"title": title or "Inbound email lead"}
+            if person_id:
+                body["person_id"] = int(person_id)
+            params = {"api_token": token}
+            with _http() as c:
+                r = c.post(f"{api}/leads", params=params, json=body)
+                r.raise_for_status()
+                return (r.json().get("data") or {}).get("id")
+
+        # Parse model output as JSON; be forgiving if the model wrapped it in text
+        text = (output_text or "").strip()
+        try:
+            payload = json.loads(text)
+        except Exception:
+            m = re.search(r"\{[\s\S]*\}", text)
+            payload = json.loads(m.group(0)) if m else {"leads": []}
+
+        leads = payload.get("leads") or []
+        created = []
+        for it in leads:
+            try:
+                if not bool(it.get("is_lead")):
+                    continue
+                sender_email = _clean_email(str(it.get("sender_email") or ""))
+                sender_name = (it.get("sender_name") or (sender_email.split("@")[0] if sender_email else "Unknown")).strip()
+                reply_subject = (it.get("reply_subject") or "").strip() or f"Re: {sender_name}"
+                # Pipedrive person
+                pid = _find_person_id_by_email(sender_email)
+                if not pid:
+                    pid = _create_person(sender_name, sender_email)
+                # Pipedrive lead (title required; link to person)
+                lead_title = f"Inbound: {sender_name} - {reply_subject}"[:180]
+                lid = _create_lead(lead_title, pid)
+                created.append(
+                    {"person_id": pid, "lead_id": lid, "email": sender_email, "name": sender_name, "subject": reply_subject}
+                )
+            except Exception as e:
+                created.append({"error": _redact(str(e))})
+
+        # Compact status for logs/VS Code
+        lines = []
+        for c in created:
+            if "error" in c:
+                lines.append(f"- ERROR: {c['error']}")
+            else:
+                lines.append(
+                    f"- Name: {c['name']} | Email: {c['email']} | PersonId: {c['person_id']} | LeadId: {c['lead_id']} | Subject: {c['subject']}"
+                )
+        status = "ok" if any("lead_id" in c for c in created) else "no_leads_created"
+        return {
+            "artifact_uri": None,
+            "integration_status": f"{status} — source=ms365 | Pipedrive results: " + " ; ".join(lines[:10]),
+            "output_override": output_text,
+        }
+
+
+
+
 
     # --- Zoho Recruit (lazy import; resume flows use prefetch) ---
 
@@ -1690,6 +1845,8 @@ def route(req: RouteRequest) -> RouteResponse:
             prompt = _build_pd_mailtriage_prompt(pre, req.prompt)
         elif pre and req.integration.kind == "pd.mail_lead":
             prompt = _build_pd_maillead_prompt(pre, req.prompt)
+        elif pre and req.integration.kind == "ms.mail_leads_to_pd":
+            prompt = _build_ms_leadscan_prompt(pre, req.prompt)
         elif pre and req.integration.kind == "g.gmail_summarize":   # ← add this block
             prompt = _build_gmail_summary_prompt(pre, req.prompt)   # ← use the builder
         elif pre:
